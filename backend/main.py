@@ -41,17 +41,20 @@ def chat_endpoint(req: ChatRequest):
     try:
         client = genai.Client(api_key=api_key)
         response = client.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-3.8-flash",
             contents=user_msg,
             config=types.GenerateContentConfig(
+                temperature=0.7,
                 system_instruction=(
-                    "तिमी SATHI AI (साथी एआई) हौ, एक सहयोगी, स्पष्ट र मित्रवत् नेपाली एआई असिस्टेन्ट। "
-                    "सधैँ प्राकृतिक र बुझिने नेपाली भाषामा जवाफ देऊ।"
-                )
+                    "तिमी SATHI AI (साथी एआई) हौ—एक छिटो, बुद्धिमान, सहयोगी र मित्रवत् नेपाली एआई असिस्टेन्ट। "
+                    "सधैँ प्राकृतिक, स्पष्ट र बुझिने नेपाली भाषामा जवाफ देऊ। "
+                    "यदि प्रयोगकर्ताले कोडिङ, प्रोग्रामिङ, डिबगिङ, वेबसाइट/एप बनाउने, अल्गोरिदम, गणित, वा कुनै प्राविधिक कुरा सोधेमा "
+                    "सफा, सही र पूरा चल्ने कोड देऊ, आवश्यक ठाउँमा कोड ब्लक (```भाषा ... ```) प्रयोग गर, र नेपालीमा छोटो तथा स्पष्ट व्याख्या देऊ। "
+                    "सामान्य प्रश्न, लेखन, वा अन्य विषयमा पनि छिटो, सटिक र उपयोगी जवाफ देऊ।"
+                ),
             ),
         )
         reply_text = response.text or "माफ गर्नुहोस्, अहिले जवाफ तयार पार्न सकिएन।"
         return {"reply": reply_text}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"AI जवाफ ल्याउँदा समस्या आयो: {str(e)}")
-
