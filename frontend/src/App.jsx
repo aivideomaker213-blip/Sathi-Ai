@@ -2,6 +2,64 @@ import React, { useEffect, useRef, useState } from "react";
 
 const API_BASE_URL = (import.meta.env.VITE_API_URL || "").replace(/\/$/, "");
 
+function CodeBlock({ language, code }) {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(code);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1800);
+    } catch (_) {}
+  };
+
+  return (
+    <div className="sathi-code-block">
+      <div className="sathi-code-header">
+        <span>{language || "code"}</span>
+        <button
+          type="button"
+          className="sathi-copy-btn"
+          onClick={handleCopy}
+        >
+          {copied ? "कपी भयो ✓" : "कपी गर्नुहोस्"}
+        </button>
+      </div>
+      <pre className="sathi-code-pre">
+        <code>{code}</code>
+      </pre>
+    </div>
+  );
+}
+
+function MessageContent({ text }) {
+  const parts = (text || "").split(/(```[\s\S]*?```)/g);
+
+  return (
+    <div className="sathi-msg-content">
+      {parts.map((part, idx) => {
+        if (!part) return null;
+        if (part.startsWith("```") && part.endsWith("```")) {
+          const inner = part.slice(3, -3);
+          const firstNewline = inner.indexOf("\n");
+          const language =
+            firstNewline !== -1 ? inner.slice(0, firstNewline).trim() : "";
+          const code =
+            firstNewline !== -1
+              ? inner.slice(firstNewline + 1).replace(/\n$/, "")
+              : inner;
+          return <CodeBlock key={idx} language={language} code={code} />;
+        }
+        return (
+          <div key={idx} className="sathi-text-part">
+            {part}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 export default function App() {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
@@ -9,7 +67,7 @@ export default function App() {
   const [messages, setMessages] = useState([
     {
       role: "assistant",
-      text: "नमस्ते! म SATHI AI (साथी एआई) हुँ। मलाई नेपालीमा जे पनि सोध्न सक्नुहुन्छ—म तपाईंको साथी बनेर मद्दत गर्न तयार छु।"
+      text: "नमस्ते! म SATHI AI (साथी एआई) हुँ। कोडिङ, नेपाली कुराकानी, वा जे पनि सोध्न सक्नुहुन्छ—म छिटो र भरपर्दो जवाफ दिन तयार छु।"
     }
   ]);
 
@@ -17,10 +75,15 @@ export default function App() {
   const manualStopRef = useRef(false);
   const baseTextRef = useRef("");
   const latestTextRef = useRef("");
+  const bottomRef = useRef(null);
 
   useEffect(() => {
     latestTextRef.current = input;
   }, [input]);
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages, loading]);
 
   useEffect(() => {
     return () => {
@@ -33,12 +96,36 @@ export default function App() {
     };
   }, []);
 
+  const fallbackNonStream = async (trimmed, historyPayload, assistantIndex, baseList) => {
+    const res = await fetch(`${API_BASE_URL}/api/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: trimmed, history: historyPayload })
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.detail || "जवाफ ल्याउन सकिएन।");
+    }
+    const next = [...baseList];
+    next[assistantIndex] = { role: "assistant", text: data.reply };
+    setMessages(next);
+  };
+
   const sendMessageText = async (rawText) => {
     const trimmed = (rawText || "").trim();
     if (!trimmed || loading) return;
 
-    const updatedMessages = [...messages, { role: "user", text: trimmed }];
-    setMessages(updatedMessages);
+    const historyPayload = messages.slice(-10).map((m) => ({
+      role: m.role,
+      text: m.text
+    }));
+
+    const userMsgObj = { role: "user", text: trimmed };
+    const assistantPlaceholder = { role: "assistant", text: "" };
+    const baseList = [...messages, userMsgObj, assistantPlaceholder];
+    const assistantIndex = baseList.length - 1;
+
+    setMessages(baseList);
     setInput("");
     baseTextRef.current = "";
     latestTextRef.current = "";
@@ -46,51 +133,63 @@ export default function App() {
 
     try {
       if (!API_BASE_URL) {
-        setMessages([
-          ...updatedMessages,
-          {
-            role: "assistant",
-            text: "ब्याकएन्ड URL (`VITE_API_URL`) अझै जोडिएको छैन। ब्याकएन्ड तयार भएपछि यहाँबाट सिधै AI जवाफ आउनेछ।"
-          }
-        ]);
+        const next = [...baseList];
+        next[assistantIndex] = {
+          role: "assistant",
+          text: "ब्याकएन्ड URL (`VITE_API_URL`) सेट गरिएको छैन।"
+        };
+        setMessages(next);
         return;
       }
 
-      const res = await fetch(`${API_BASE_URL}/api/chat`, {
+      const streamRes = await fetch(`${API_BASE_URL}/api/chat/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: trimmed })
+        body: JSON.stringify({ message: trimmed, history: historyPayload })
       });
 
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.detail || "जवाफ ल्याउन सकिएन।");
+      if (!streamRes.ok || !streamRes.body) {
+        await fallbackNonStream(trimmed, historyPayload, assistantIndex, baseList);
+        return;
       }
 
-      setMessages([
-        ...updatedMessages,
-        { role: "assistant", text: data.reply }
-      ]);
+      const reader = streamRes.body.getReader();
+      const decoder = new TextDecoder("utf-8");
+      let accumulated = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        accumulated += decoder.decode(value, { stream: true });
+        setMessages((prev) => {
+          const updated = [...prev];
+          if (updated[assistantIndex]) {
+            updated[assistantIndex] = {
+              role: "assistant",
+              text: accumulated
+            };
+          }
+          return updated;
+        });
+      }
+
+      if (!accumulated.trim()) {
+        await fallbackNonStream(trimmed, historyPayload, assistantIndex, baseList);
+      }
     } catch (err) {
-      setMessages([
-        ...updatedMessages,
-        {
-          role: "assistant",
-          text: `कनेक्सनमा समस्या आयो: ${err.message}`
+      setMessages((prev) => {
+        const updated = [...prev];
+        if (updated[assistantIndex]) {
+          updated[assistantIndex] = {
+            role: "assistant",
+            text: `कनेक्सनमा समस्या आयो: ${err.message}`
+          };
         }
-      ]);
+        return updated;
+      });
     } finally {
       setLoading(false);
     }
-  };
-
-  const handleSend = async (e) => {
-    e.preventDefault();
-    if (isListening) {
-      stopListeningOnly();
-    }
-    const textToSend = latestTextRef.current || input;
-    await sendMessageText(textToSend);
   };
 
   const stopListeningOnly = () => {
@@ -101,6 +200,15 @@ export default function App() {
         recognitionRef.current.stop();
       } catch (_) {}
     }
+  };
+
+  const handleSend = async (e) => {
+    e.preventDefault();
+    if (isListening) {
+      stopListeningOnly();
+    }
+    const textToSend = latestTextRef.current || input;
+    await sendMessageText(textToSend);
   };
 
   const handleVoiceSendClick = async () => {
@@ -133,7 +241,9 @@ export default function App() {
     recognition.continuous = true;
     recognition.interimResults = true;
 
-    baseTextRef.current = latestTextRef.current ? `${latestTextRef.current.trim()} ` : "";
+    baseTextRef.current = latestTextRef.current
+      ? `${latestTextRef.current.trim()} `
+      : "";
     manualStopRef.current = false;
     recognitionRef.current = recognition;
     setIsListening(true);
@@ -211,7 +321,7 @@ export default function App() {
             <div className="sathi-subtitle">SMARTER. FASTER. TOGETHER.</div>
           </div>
         </div>
-        <span className="sathi-badge">Gemini Connected</span>
+        <span className="sathi-badge">Gemini 3.8 Flash</span>
       </header>
 
       <main className="sathi-main">
@@ -227,15 +337,17 @@ export default function App() {
 
         {messages.map((msg, index) => (
           <div key={index} className={`msg-row ${msg.role}`}>
-            <div className="msg-bubble">{msg.text}</div>
+            <div className="msg-bubble">
+              {msg.text ? (
+                <MessageContent text={msg.text} />
+              ) : (
+                "साथी एआई जवाफ तयार पार्दैछ..."
+              )}
+            </div>
           </div>
         ))}
 
-        {loading && (
-          <div className="msg-row assistant">
-            <div className="msg-bubble">साथी एआई जवाफ तयार पार्दैछ...</div>
-          </div>
-        )}
+        <div ref={bottomRef} />
       </main>
 
       <form className="sathi-input-bar" onSubmit={handleSend}>
@@ -269,7 +381,7 @@ export default function App() {
             placeholder={
               isListening
                 ? "सुन्दैछु... बोलिरहनुहोस् वा Stop / Send थिच्नुहोस्"
-                : "नेपालीमा केही लेख्नुहोस्..."
+                : "नेपालीमा केही लेख्नुहोस् वा कोड सोध्नुहोस्..."
             }
             value={input}
             onChange={(e) => setInput(e.target.value)}
