@@ -1,10 +1,11 @@
-import React, { useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 
 const API_BASE_URL = (import.meta.env.VITE_API_URL || "").replace(/\/$/, "");
 
 export default function App() {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [isListening, setIsListening] = useState(false);
   const [messages, setMessages] = useState([
     {
       role: "assistant",
@@ -12,14 +13,35 @@ export default function App() {
     }
   ]);
 
-  const handleSend = async (e) => {
-    e.preventDefault();
-    const trimmed = input.trim();
+  const recognitionRef = useRef(null);
+  const manualStopRef = useRef(false);
+  const baseTextRef = useRef("");
+  const latestTextRef = useRef("");
+
+  useEffect(() => {
+    latestTextRef.current = input;
+  }, [input]);
+
+  useEffect(() => {
+    return () => {
+      manualStopRef.current = true;
+      if (recognitionRef.current) {
+        try {
+          recognitionRef.current.stop();
+        } catch (_) {}
+      }
+    };
+  }, []);
+
+  const sendMessageText = async (rawText) => {
+    const trimmed = (rawText || "").trim();
     if (!trimmed || loading) return;
 
     const updatedMessages = [...messages, { role: "user", text: trimmed }];
     setMessages(updatedMessages);
     setInput("");
+    baseTextRef.current = "";
+    latestTextRef.current = "";
     setLoading(true);
 
     try {
@@ -62,9 +84,39 @@ export default function App() {
     }
   };
 
+  const handleSend = async (e) => {
+    e.preventDefault();
+    if (isListening) {
+      stopListeningOnly();
+    }
+    const textToSend = latestTextRef.current || input;
+    await sendMessageText(textToSend);
+  };
+
+  const stopListeningOnly = () => {
+    manualStopRef.current = true;
+    setIsListening(false);
+    if (recognitionRef.current) {
+      try {
+        recognitionRef.current.stop();
+      } catch (_) {}
+    }
+  };
+
+  const handleVoiceSendClick = async () => {
+    const textToSend = (latestTextRef.current || input).trim();
+    stopListeningOnly();
+    if (textToSend) {
+      await sendMessageText(textToSend);
+    }
+  };
+
   const handleVoiceClick = () => {
+    if (loading || isListening) return;
+
     const SpeechRecognition =
       window.SpeechRecognition || window.webkitSpeechRecognition;
+
     if (!SpeechRecognition) {
       setMessages((prev) => [
         ...prev,
@@ -78,11 +130,71 @@ export default function App() {
 
     const recognition = new SpeechRecognition();
     recognition.lang = "ne-NP";
+    recognition.continuous = true;
+    recognition.interimResults = true;
+
+    baseTextRef.current = latestTextRef.current ? `${latestTextRef.current.trim()} ` : "";
+    manualStopRef.current = false;
+    recognitionRef.current = recognition;
+    setIsListening(true);
+
     recognition.onresult = (event) => {
-      const spoken = event.results[0][0].transcript;
-      setInput(spoken);
+      let finalTranscript = "";
+      let interimTranscript = "";
+
+      for (let i = event.resultIndex; i < event.results.length; i += 1) {
+        const transcript = event.results[i][0].transcript;
+        if (event.results[i].isFinal) {
+          finalTranscript += `${transcript} `;
+        } else {
+          interimTranscript += transcript;
+        }
+      }
+
+      if (finalTranscript) {
+        baseTextRef.current = `${baseTextRef.current}${finalTranscript}`;
+      }
+
+      const combined = `${baseTextRef.current}${interimTranscript}`.trimStart();
+      latestTextRef.current = combined;
+      setInput(combined);
     };
-    recognition.start();
+
+    recognition.onerror = (event) => {
+      if (event.error === "not-allowed" || event.error === "service-not-allowed") {
+        manualStopRef.current = true;
+        setIsListening(false);
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: "assistant",
+            text: "माइक्रोफोन अनुमति दिइएको छैन। कृपया ब्राउजर सेटिङबाट माइक्रोफोन अनुमति दिनुहोस्।"
+          }
+        ]);
+      }
+    };
+
+    recognition.onend = () => {
+      if (!manualStopRef.current) {
+        baseTextRef.current = latestTextRef.current
+          ? `${latestTextRef.current.trim()} `
+          : "";
+        try {
+          recognition.start();
+        } catch (_) {
+          setIsListening(false);
+        }
+      } else {
+        setIsListening(false);
+      }
+    };
+
+    try {
+      recognition.start();
+    } catch (_) {
+      manualStopRef.current = true;
+      setIsListening(false);
+    }
   };
 
   return (
@@ -128,29 +240,61 @@ export default function App() {
 
       <form className="sathi-input-bar" onSubmit={handleSend}>
         <div className="sathi-input-inner">
-          <button
-            type="button"
-            className="sathi-btn sathi-btn-voice"
-            onClick={handleVoiceClick}
-            title="नेपाली भ्वाइस"
-          >
-            🎤
-          </button>
+          {!isListening ? (
+            <button
+              type="button"
+              className="sathi-btn sathi-btn-voice"
+              onClick={handleVoiceClick}
+              disabled={loading}
+              title="नेपाली भ्वाइस सुरु गर्नुहोस्"
+              aria-label="नेपाली भ्वाइस सुरु गर्नुहोस्"
+            >
+              🎙️ माइक
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="sathi-btn sathi-btn-stop"
+              onClick={stopListeningOnly}
+              title="रेकर्डिङ रोक्नुहोस्"
+              aria-label="रेकर्डिङ रोक्नुहोस्"
+            >
+              ⏹ Stop
+            </button>
+          )}
+
           <input
             type="text"
             className="sathi-input"
-            placeholder="नेपालीमा केही लेख्नुहोस्..."
+            placeholder={
+              isListening
+                ? "सुन्दैछु... बोलिरहनुहोस् वा Stop / Send थिच्नुहोस्"
+                : "नेपालीमा केही लेख्नुहोस्..."
+            }
             value={input}
             onChange={(e) => setInput(e.target.value)}
             disabled={loading}
           />
-          <button
-            type="submit"
-            className="sathi-btn sathi-btn-send"
-            disabled={loading}
-          >
-            {loading ? "..." : "पठाउनुहोस्"}
-          </button>
+
+          {isListening ? (
+            <button
+              type="button"
+              className="sathi-btn sathi-btn-send"
+              onClick={handleVoiceSendClick}
+              disabled={loading}
+              title="भ्वाइस सन्देश पठाउनुहोस्"
+            >
+              ➤ Send
+            </button>
+          ) : (
+            <button
+              type="submit"
+              className="sathi-btn sathi-btn-send"
+              disabled={loading}
+            >
+              {loading ? "..." : "पठाउनुहोस्"}
+            </button>
+          )}
         </div>
       </form>
     </div>
