@@ -1,29 +1,65 @@
 import React, { useState } from "react";
 
+const API_BASE_URL = (import.meta.env.VITE_API_URL || "").replace(/\/$/, "");
+
 export default function App() {
   const [input, setInput] = useState("");
+  const [loading, setLoading] = useState(false);
   const [messages, setMessages] = useState([
     {
       role: "assistant",
-      text: "नमस्ते! म SATHI AI (साथी एआई) हुँ। अहिले थिम र इन्टरफेस तयार हुँदैछ—तपाईं नेपालीमा सन्देश लेख्न वा भ्वाइस बटन थिचेर परीक्षण गर्न सक्नुहुन्छ।"
+      text: "नमस्ते! म SATHI AI (साथी एआई) हुँ। मलाई नेपालीमा जे पनि सोध्न सक्नुहुन्छ—म तपाईंको साथी बनेर मद्दत गर्न तयार छु।"
     }
   ]);
 
-  const handleSend = (e) => {
+  const handleSend = async (e) => {
     e.preventDefault();
     const trimmed = input.trim();
-    if (!trimmed) return;
+    if (!trimmed || loading) return;
 
-    const nextMessages = [
-      ...messages,
-      { role: "user", text: trimmed },
-      {
-        role: "assistant",
-        text: `तपाईंले भन्नुभयो: "${trimmed}" — अर्को चरणमा हामी यहाँ Google AI Studio (Gemini) API जोड्नेछौँ।`
-      }
-    ];
-    setMessages(nextMessages);
+    const updatedMessages = [...messages, { role: "user", text: trimmed }];
+    setMessages(updatedMessages);
     setInput("");
+    setLoading(true);
+
+    try {
+      if (!API_BASE_URL) {
+        setMessages([
+          ...updatedMessages,
+          {
+            role: "assistant",
+            text: "ब्याकएन्ड URL (`VITE_API_URL`) अझै जोडिएको छैन। ब्याकएन्ड तयार भएपछि यहाँबाट सिधै AI जवाफ आउनेछ।"
+          }
+        ]);
+        return;
+      }
+
+      const res = await fetch(`${API_BASE_URL}/api/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: trimmed })
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.detail || "जवाफ ल्याउन सकिएन।");
+      }
+
+      setMessages([
+        ...updatedMessages,
+        { role: "assistant", text: data.reply }
+      ]);
+    } catch (err) {
+      setMessages([
+        ...updatedMessages,
+        {
+          role: "assistant",
+          text: `कनेक्सनमा समस्या आयो: ${err.message}`
+        }
+      ]);
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleVoiceClick = () => {
@@ -63,7 +99,7 @@ export default function App() {
             <div className="sathi-subtitle">SMARTER. FASTER. TOGETHER.</div>
           </div>
         </div>
-        <span className="sathi-badge">v0.1 UI</span>
+        <span className="sathi-badge">Gemini Connected</span>
       </header>
 
       <main className="sathi-main">
@@ -82,6 +118,12 @@ export default function App() {
             <div className="msg-bubble">{msg.text}</div>
           </div>
         ))}
+
+        {loading && (
+          <div className="msg-row assistant">
+            <div className="msg-bubble">साथी एआई जवाफ तयार पार्दैछ...</div>
+          </div>
+        )}
       </main>
 
       <form className="sathi-input-bar" onSubmit={handleSend}>
@@ -100,13 +142,17 @@ export default function App() {
             placeholder="नेपालीमा केही लेख्नुहोस्..."
             value={input}
             onChange={(e) => setInput(e.target.value)}
+            disabled={loading}
           />
-          <button type="submit" className="sathi-btn sathi-btn-send">
-            पठाउनुहोस्
+          <button
+            type="submit"
+            className="sathi-btn sathi-btn-send"
+            disabled={loading}
+          >
+            {loading ? "..." : "पठाउनुहोस्"}
           </button>
         </div>
       </form>
     </div>
   );
 }
-
